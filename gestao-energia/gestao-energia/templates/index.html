@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Consumo Ativo - Gestão Elétrica Inteligente</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- FontAwesome para ícones -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Stylesheet Customizada -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Cabeçalho -->
+        <header class="app-header">
+            <div class="logo">
+                <i class="fa-solid fa-bolt-lightning text-glow"></i>
+                <h1>Consumo<span>Ativo</span></h1>
+            </div>
+            <div class="header-status">
+                <span class="status-indicator online"></span> Online
+            </div>
+        </header>
+
+        <!-- Navegação por Abas -->
+        <nav class="app-nav">
+            <button class="nav-btn active" data-tab="dashboard">
+                <i class="fa-solid fa-chart-line"></i> Painel
+            </button>
+            <button class="nav-btn" data-tab="history">
+                <i class="fa-solid fa-clock-rotate-left"></i> Histórico
+            </button>
+            <button class="nav-btn" data-tab="settings">
+                <i class="fa-solid fa-gear"></i> Ajustes
+            </button>
+        </nav>
+
+        <!-- Conteúdo Principal -->
+        <main class="app-content">
+            <!-- ABA 1: DASHBOARD -->
+            <section id="dashboard" class="tab-pane active">
+                <div class="dashboard-grid">
+                    <!-- Painel de Captura de Imagem -->
+                    <div class="card glass shadow-lg card-upload">
+                        <div class="card-header">
+                            <h2><i class="fa-solid fa-camera"></i> Capturar Medidor</h2>
+                        </div>
+                        <div class="upload-zone" id="upload-zone">
+                            <input type="file" id="camera-input" accept="image/*" hidden>
+                            <div class="upload-prompt" id="upload-prompt">
+                                <i class="fa-solid fa-cloud-arrow-up text-glow"></i>
+                                <p class="primary-text">Tirar Foto ou Upload</p>
+                                <p class="secondary-text">Toque para abrir a câmera do celular</p>
+                            </div>
+                            <div class="image-preview-container hidden" id="preview-container">
+                                <img src="" alt="Previsão do Medidor" id="preview-img">
+                                <button class="btn btn-danger btn-remove" id="btn-remove-img">
+                                    <i class="fa-solid fa-xmark"></i>
+                                </button>
+                                <div class="loading-overlay hidden" id="loading-overlay">
+                                    <div class="spinner"></div>
+                                    <p>Analisando medidor...</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Controle de Leitura e Botões de Cálculo -->
+                    <div class="card glass shadow-lg">
+                        <div class="card-header">
+                            <h2><i class="fa-solid fa-keyboard"></i> Valor da Leitura</h2>
+                        </div>
+                        <div class="reading-input-group">
+                            <label for="current-reading">Leitura Atual Detectada (kWh)</label>
+                            <div class="input-with-icon">
+                                <i class="fa-solid fa-calculator"></i>
+                                <input type="number" id="current-reading" placeholder="Carregue uma foto ou digite..." min="0" step="1">
+                            </div>
+                            <p class="input-help-text">Você pode auditar/corrigir o valor gerado pela IA a qualquer momento.</p>
+                        </div>
+                        <div class="action-buttons">
+                            <button class="btn btn-primary" id="btn-calculate">
+                                <i class="fa-solid fa-bolt"></i> Calcular Consumo
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Resultados Analíticos -->
+                    <div class="card glass shadow-lg card-results hidden" id="results-card">
+                        <div class="card-header">
+                            <h2><i class="fa-solid fa-square-poll-vertical"></i> Resultados do Ciclo</h2>
+                        </div>
+                        <div class="results-grid">
+                            <div class="result-tile">
+                                <span class="tile-label">Gasto Acumulado</span>
+                                <span class="tile-value highlight-cyan" id="result-kwh-consumed">-- <span class="unit">kWh</span></span>
+                                <span class="tile-sub" id="result-days-elapsed">-- dias decorridos</span>
+                            </div>
+                            <div class="result-tile">
+                                <span class="tile-label">Média de Consumo</span>
+                                <span class="tile-value highlight-cyan" id="result-daily-avg">-- <span class="unit">kWh/dia</span></span>
+                                <span class="tile-sub">Consumo diário atual</span>
+                            </div>
+                            <div class="result-tile">
+                                <span class="tile-label">Projeção do Ciclo</span>
+                                <span class="tile-value highlight-cyan" id="result-projected-kwh">-- <span class="unit">kWh</span></span>
+                                <span class="tile-sub" id="result-days-remaining">-- dias restantes</span>
+                            </div>
+                            <div class="result-tile highlight-tile">
+                                <span class="tile-label">Fatura Estimada</span>
+                                <span class="tile-value highlight-green" id="result-estimated-cost">R$ --</span>
+                                <span class="tile-sub">Previsão até o fechamento</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ABA 2: HISTÓRICO -->
+            <section id="history" class="tab-pane">
+                <div class="card glass shadow-lg">
+                    <div class="card-header">
+                        <h2><i class="fa-solid fa-clock-rotate-left"></i> Histórico de Ciclos Fechados</h2>
+                    </div>
+                    <div class="history-table-wrapper">
+                        <table class="history-table" id="history-table">
+                            <thead>
+                                <tr>
+                                    <th>Ciclo</th>
+                                    <th>Leitura Inicial</th>
+                                    <th>Leitura Final</th>
+                                    <th>Consumo (kWh)</th>
+                                    <th>Tarifa (R$)</th>
+                                    <th>Custo Total</th>
+                                    <th>Ações</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Linhas inseridas dinamicamente por JS -->
+                            </tbody>
+                        </table>
+                        <div class="empty-state" id="history-empty-state">
+                            <i class="fa-solid fa-folder-open"></i>
+                            <p>Nenhum ciclo fechado no histórico.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ABA 3: AJUSTES -->
+            <section id="settings" class="tab-pane">
+                <div class="settings-grid">
+                    <!-- Configurações do Ciclo Corrente -->
+                    <div class="card glass shadow-lg">
+                        <div class="card-header">
+                            <h2><i class="fa-solid fa-calendar-days"></i> Configurações do Ciclo</h2>
+                        </div>
+                        <div class="settings-form">
+                            <div class="form-group">
+                                <label for="config-prev-reading">Última Leitura Oficial (kWh)</label>
+                                <input type="number" id="config-prev-reading" placeholder="Ex: 2171" min="0">
+                            </div>
+                            <div class="form-group">
+                                <label for="config-start-date">Data da Última Leitura</label>
+                                <input type="date" id="config-start-date">
+                            </div>
+                            <div class="form-group">
+                                <label for="config-end-date">Data da Próxima Leitura (Fechamento)</label>
+                                <input type="date" id="config-end-date">
+                            </div>
+                            <div class="form-group">
+                                <label for="config-tariff">Tarifa de Energia (R$ por kWh)</label>
+                                <input type="number" id="config-tariff" placeholder="Ex: 0.95" step="0.001" min="0">
+                            </div>
+                            <div class="action-buttons mt-4">
+                                <button class="btn btn-success" id="btn-save-settings">
+                                    <i class="fa-solid fa-floppy-disk"></i> Salvar Ajustes
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Ação de Virada de Ciclo -->
+                    <div class="card glass shadow-lg border-warning-glow">
+                        <div class="card-header">
+                            <h2><i class="fa-solid fa-calendar-check"></i> Fechar Ciclo de Cobrança</h2>
+                        </div>
+                        <div class="card-body text-center">
+                            <p class="warning-text">Use esta ação apenas quando o ciclo de faturamento mensal for oficialmente encerrado.</p>
+                            <p class="secondary-text">Isso irá salvar o consumo atual no histórico, definir a leitura de hoje como a leitura inicial do novo ciclo e resetar a contagem de dias.</p>
+                            <button class="btn btn-warning mt-4 w-100" id="btn-close-cycle">
+                                <i class="fa-solid fa-file-invoice-dollar"></i> Fechar Período e Iniciar Novo Ciclo
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Backup e Restauração de Dados -->
+                    <div class="card glass shadow-lg">
+                        <div class="card-header">
+                            <h2><i class="fa-solid fa-database"></i> Backup de Dados</h2>
+                        </div>
+                        <div class="card-body">
+                            <p class="secondary-text mb-4">Como os dados são salvos no seu navegador para manter a hospedagem 100% gratuita, faça backup periodicamente ou use para transferir dados entre o PC e o celular.</p>
+                            <div class="backup-actions">
+                                <button class="btn btn-secondary" id="btn-export-backup">
+                                    <i class="fa-solid fa-file-export"></i> Exportar Backup (JSON)
+                                </button>
+                                <label class="btn btn-secondary text-center" for="import-backup-file">
+                                    <i class="fa-solid fa-file-import"></i> Importar Backup (JSON)
+                                </label>
+                                <input type="file" id="import-backup-file" accept=".json" hidden>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Script JavaScript Principal -->
+    <script src="{{ url_for('static', filename='js/main.js') }}"></script>
+</body>
+</html>
