@@ -68,37 +68,34 @@ def process_meter_image(cv_img):
         maxRadius=95
     )
     
-    all_dials = []
-    if circles is not None:
-        circles = np.round(circles[0, :]).astype("int")
-        for (cx, cy, r) in circles:
-            all_dials.append((cx, cy + y_min_roi, r)) # Ajustar Y para coordenadas globais
-            
-    best_group = None
+    from itertools import combinations
     
-    # --- MÉTODO 1: Detecção Geométrica Rápida (Y-Clustering) ---
-    # Este método é extremamente robusto contra ruídos de fundo e variações de cor/ferrugem
-    if len(all_dials) >= 4:
-        from itertools import combinations
+    best_group = None
+    if circles is not None:
+        # Limit to top 25 to avoid combinatorial explosion (HoughCircles returns sorted by strength)
+        circles = circles[0, :25]
+        all_dials = []
+        for (cx, cy, r) in circles:
+            all_dials.append((cx, cy + y_min_roi, r))
+            
         min_score = float('inf')
         
-        # Agrupar círculos que possuem Y alinhados (tolerância de 40px)
-        groups = []
+        # 1. Try to find a group of 4 aligned dials
+        groups_4 = []
         for c1 in all_dials:
             group = [c1]
             for c2 in all_dials:
-                if c1 != c2 and abs(c1[1] - c2[1]) < 40:
+                if c1 != c2 and abs(c1[1] - c2[1]) < 35:
                     group.append(c2)
             if len(group) >= 4:
-                # Remover duplicatas
                 unique_group = []
                 for item in group:
                     if item not in unique_group:
                         unique_group.append(item)
                 if len(unique_group) >= 4:
-                    groups.append(unique_group)
+                    groups_4.append(unique_group)
                     
-        for group in groups:
+        for group in groups_4:
             for comb in combinations(group, 4):
                 sorted_comb = sorted(comb, key=lambda c: c[0])
                 ys = [c[1] for c in sorted_comb]
@@ -116,87 +113,86 @@ def process_meter_image(cv_img):
                 avg_r = np.mean(radii)
                 avg_spacing = np.mean([dx1, dx2, dx3])
                 
-                # Critérios de alinhamento e espaçamento
-                if y_variance < 120 and r_variance < 120:
-                    if avg_spacing > 1.0 * avg_r and avg_spacing < 2.5 * avg_r:
+                # Broadened spacing check to support different image scales/distances
+                if y_variance < 100 and r_variance < 100:
+                    if avg_spacing > 1.0 * avg_r and avg_spacing < 3.2 * avg_r:
                         if score < min_score:
                             min_score = score
                             best_group = sorted_comb
                             
-    # --- MÉTODO 2 (FALLBACK): Detecção por Placa Amarela (Modelo Físico D-58) ---
-    # Se o Y-clustering não encontrar os 4 (ex: se um mostrador estiver com reflexo total e Hough falhar)
-    if best_group is None:
-        hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
-        lower_yellow = np.array([20, 60, 130])
-        upper_yellow = np.array([30, 255, 255])
-        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        plate_contour = None
-        max_area = -1
-        for c in contours:
-            area = cv2.contourArea(c)
-            if area < 5000:
-                continue
-            cx, cy, cw, ch = cv2.boundingRect(c)
-            aspect_ratio = float(cw) / ch
-            if 300 <= cw <= 800 and 150 <= ch <= 500 and 1.3 <= aspect_ratio <= 2.5:
-                if area > max_area:
-                    max_area = area
-                    plate_contour = c
+        # 2. If 4 aligned dials not found, try to find 3 and extrapolate
+        if best_group is None:
+            groups_3 = []
+            for c1 in all_dials:
+                group = [c1]
+                for c2 in all_dials:
+                    if c1 != c2 and abs(c1[1] - c2[1]) < 30:
+                        group.append(c2)
+                if len(group) >= 3:
+                    unique_group = []
+                    for item in group:
+                        if item not in unique_group:
+                            unique_group.append(item)
+                    if len(unique_group) >= 3:
+                        groups_3.append(unique_group)
+                        
+            best_3_group = None
+            min_score_3 = float('inf')
+            
+            for group in groups_3:
+                for comb in combinations(group, 3):
+                    sorted_comb = sorted(comb, key=lambda c: c[0])
+                    ys = [c[1] for c in sorted_comb]
+                    radii = [c[2] for c in sorted_comb]
                     
-        if plate_contour is not None:
-            px, py, pw, ph = cv2.boundingRect(plate_contour)
-            pw_float = float(pw)
-            ph_float = float(ph)
-            
-            x_factors = [0.20, 0.395, 0.59, 0.79]
-            y_factor = 0.45
-            r_factor = 0.14
-            
-            best_group = []
-            for x_fac in x_factors:
-                cx_exp = int(px + x_fac * pw_float)
-                cy_exp = int(py + y_factor * ph_float)
-                r_exp = int(r_factor * pw_float)
+                    dx1 = sorted_comb[1][0] - sorted_comb[0][0]
+                    dx2 = sorted_comb[2][0] - sorted_comb[1][0]
+                    
+                    y_variance = np.var(ys)
+                    r_variance = np.var(radii)
+                    spacing_diff = abs(dx1 - dx2)
+                    
+                    score = y_variance + r_variance * 2 + spacing_diff
+                    avg_r = np.mean(radii)
+                    avg_spacing = np.mean([dx1, dx2])
+                    
+                    if y_variance < 80 and r_variance < 80 and spacing_diff < 30:
+                        if avg_spacing > 1.0 * avg_r and avg_spacing < 3.2 * avg_r:
+                            if score < min_score_3:
+                                min_score_3 = score
+                                best_3_group = sorted_comb
+                                
+            if best_3_group is not None:
+                d3 = sorted(best_3_group, key=lambda c: c[0])
+                dx = (d3[1][0] - d3[0][0] + d3[2][0] - d3[1][0]) / 2.0
+                avg_y = int(np.mean([c[1] for c in d3]))
+                avg_r = int(np.mean([c[2] for c in d3]))
                 
-                # Casar com círculo mais próximo detectado por Hough
-                closest_circle = None
-                min_dist = float('inf')
-                max_allowed_dist = 0.12 * pw_float
+                # Compare two extrapolation options (center should be close to 500)
+                cx4_a = int(d3[2][0] + dx)
+                dist_a = abs(((d3[0][0] + cx4_a) / 2.0) - 500.0)
                 
-                for (cx, cy, r) in all_dials:
-                    dist = math.sqrt((cx - cx_exp)**2 + (cy - cy_exp)**2)
-                    if dist < max_allowed_dist and dist < min_dist:
-                        min_dist = dist
-                        closest_circle = (cx, cy, r)
+                cx1_b = int(d3[0][0] - dx)
+                dist_b = abs(((cx1_b + d3[2][0]) / 2.0) - 500.0)
                 
-                if closest_circle is not None:
-                    best_group.append(closest_circle)
+                if dist_a < dist_b:
+                    extrapolated = (cx4_a, avg_y, avg_r)
+                    best_group = [d3[0], d3[1], d3[2], extrapolated]
                 else:
-                    best_group.append((cx_exp, cy_exp, r_exp))
+                    extrapolated = (cx1_b, avg_y, avg_r)
+                    best_group = [extrapolated, d3[0], d3[1], d3[2]]
                     
-    # --- MÉTODO 3 (FALLBACK ABSOLUTO): Modelo de Tela Centralizada ---
-    # Se nem a placa for encontrada, estima com base nas dimensões da tela (câmera apontada para o centro)
+    # 3. Fallback: Centered Static Layout Template
     if best_group is None:
-        cx_exp_list = [375, 460, 542, 627] if new_h > 1000 else [246, 363, 481, 603]
-        cy_exp = int(new_h * 0.45) if new_h > 1000 else int(new_h * 0.38)
-        r_exp = 75
-        
+        cx_exp_list = [248, 416, 584, 752]
+        cy_exp = int(new_h * 0.48)
+        r_exp = 65
         best_group = []
         for cx_exp in cx_exp_list:
-            closest_circle = None
-            min_dist = float('inf')
-            for (cx, cy, r) in all_dials:
-                dist = math.sqrt((cx - cx_exp)**2 + (cy - cy_exp)**2)
-                if dist < 60 and dist < min_dist:
-                    min_dist = dist
-                    closest_circle = (cx, cy, r)
-                    
-            if closest_circle is not None:
-                best_group.append(closest_circle)
-            else:
-                best_group.append((cx_exp, cy_exp, r_exp))
+            best_group.append((cx_exp, cy_exp, r_exp))
+            
+    # Convert all coordinates to integers
+    best_group = [(int(round(c[0])), int(round(c[1])), int(round(c[2]))) for c in best_group]
         
     # 4. Processar ponteiros (Método Híbrido)
     img_draw = img_resized.copy()
