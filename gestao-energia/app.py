@@ -114,11 +114,15 @@ def process_meter_image(cv_img):
                 avg_spacing = np.mean([dx1, dx2, dx3])
                 
                 # Broadened spacing check to support different image scales/distances
-                if y_variance < 100 and r_variance < 100:
-                    if avg_spacing > 1.0 * avg_r and avg_spacing < 3.2 * avg_r:
-                        if score < min_score:
-                            min_score = score
-                            best_group = sorted_comb
+                # Enforce that adjacent spacings are almost equal and center is valid
+                if abs(dx1 - dx2) < 25 and abs(dx2 - dx3) < 25:
+                    if y_variance < 100 and r_variance < 100:
+                        if avg_spacing > 1.0 * avg_r and avg_spacing < 3.2 * avg_r:
+                            group_center = (sorted_comb[0][0] + sorted_comb[3][0]) / 2.0
+                            if 380 <= group_center <= 620:
+                                if score < min_score:
+                                    min_score = score
+                                    best_group = sorted_comb
                             
         # 2. If 4 aligned dials not found, try to find 3 and extrapolate
         if best_group is None:
@@ -138,6 +142,7 @@ def process_meter_image(cv_img):
                         
             best_3_group = None
             min_score_3 = float('inf')
+            chosen_case = None
             
             for group in groups_3:
                 for comb in combinations(group, 3):
@@ -156,11 +161,24 @@ def process_meter_image(cv_img):
                     avg_r = np.mean(radii)
                     avg_spacing = np.mean([dx1, dx2])
                     
-                    if y_variance < 80 and r_variance < 80 and spacing_diff < 30:
+                    if y_variance < 80 and r_variance < 80 and spacing_diff < 25:
                         if avg_spacing > 1.0 * avg_r and avg_spacing < 3.2 * avg_r:
-                            if score < min_score_3:
-                                min_score_3 = score
-                                best_3_group = sorted_comb
+                            dx = avg_spacing
+                            cx4_a = int(sorted_comb[2][0] + dx)
+                            center_a = (sorted_comb[0][0] + cx4_a) / 2.0
+                            
+                            cx1_b = int(sorted_comb[0][0] - dx)
+                            center_b = (cx1_b + sorted_comb[2][0]) / 2.0
+                            
+                            dist_a = abs(center_a - 500.0)
+                            dist_b = abs(center_b - 500.0)
+                            best_center = center_a if dist_a < dist_b else center_b
+                            
+                            if 380 <= best_center <= 620:
+                                if score < min_score_3:
+                                    min_score_3 = score
+                                    best_3_group = sorted_comb
+                                    chosen_case = "A" if dist_a < dist_b else "B"
                                 
             if best_3_group is not None:
                 d3 = sorted(best_3_group, key=lambda c: c[0])
@@ -168,18 +186,11 @@ def process_meter_image(cv_img):
                 avg_y = int(np.mean([c[1] for c in d3]))
                 avg_r = int(np.mean([c[2] for c in d3]))
                 
-                # Compare two extrapolation options (center should be close to 500)
-                cx4_a = int(d3[2][0] + dx)
-                dist_a = abs(((d3[0][0] + cx4_a) / 2.0) - 500.0)
-                
-                cx1_b = int(d3[0][0] - dx)
-                dist_b = abs(((cx1_b + d3[2][0]) / 2.0) - 500.0)
-                
-                if dist_a < dist_b:
-                    extrapolated = (cx4_a, avg_y, avg_r)
+                if chosen_case == "A":
+                    extrapolated = (int(d3[2][0] + dx), avg_y, avg_r)
                     best_group = [d3[0], d3[1], d3[2], extrapolated]
                 else:
-                    extrapolated = (cx1_b, avg_y, avg_r)
+                    extrapolated = (int(d3[0][0] - dx), avg_y, avg_r)
                     best_group = [extrapolated, d3[0], d3[1], d3[2]]
                     
     # 3. Fallback: Centered Static Layout Template
