@@ -47,97 +47,59 @@ def process_meter_image(cv_img):
     new_h = int(h * (new_w / w))
     img_resized = cv2.resize(cv_img, (new_w, new_h))
     
-    # 1. Localizar o painel amarelo com limites estritos
-    hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
-    lower_yellow = np.array([20, 60, 130])
-    upper_yellow = np.array([30, 255, 255])
-    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+    # 1. Pré-processar imagem para detecção de círculos
+    gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    plate_contour = None
-    max_area = -1
-    
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < 5000:
-            continue
-        cx, cy, cw, ch = cv2.boundingRect(c)
-        aspect_ratio = float(cw) / ch
-        
-        # Filtros de proporção e dimensão da placa D-58
-        if 300 <= cw <= 800 and 150 <= ch <= 500 and 1.3 <= aspect_ratio <= 2.5:
-            if area > max_area:
-                max_area = area
-                plate_contour = c
-                
-    if plate_contour is not None:
-        px, py, pw, ph = cv2.boundingRect(plate_contour)
-    else:
-        # Fallback se não encontrar o painel amarelo específico
-        px, py, pw, ph = 0, int(new_h * 0.2), new_w, int(new_h * 0.6)
-        
-    # 2. Detectar círculos
-    roi_gray = cv2.cvtColor(img_resized[py:py+ph, px:px+pw], cv2.COLOR_BGR2GRAY)
+    # Restringir a busca de círculos à região central vertical (onde os mostradores sempre ficam)
+    y_min_roi = int(new_h * 0.25)
+    y_max_roi = int(new_h * 0.75)
+    roi_gray = gray[y_min_roi:y_max_roi, :]
     roi_blurred = cv2.medianBlur(roi_gray, 5)
     
+    # Detectar todos os círculos candidatos na ROI
     circles = cv2.HoughCircles(
         roi_blurred, 
         cv2.HOUGH_GRADIENT, 
         dp=1.2, 
-        minDist=pw // 10 if pw > 200 else 30, 
+        minDist=45, 
         param1=50, 
-        param2=20, 
-        minRadius=ph // 12 if ph > 100 else 15, 
-        maxRadius=ph // 3 if ph > 100 else 80
+        param2=22, 
+        minRadius=40, 
+        maxRadius=95
     )
     
     all_dials = []
     if circles is not None:
         circles = np.round(circles[0, :]).astype("int")
         for (cx, cy, r) in circles:
-            all_dials.append((cx + px, cy + py, r))
+            all_dials.append((cx, cy + y_min_roi, r)) # Ajustar Y para coordenadas globais
             
     best_group = None
     
-    # Se detectou o painel amarelo específico, usamos o modelo físico do D-58 para estimar e alinhar os círculos
-    if plate_contour is not None:
-        pw_float = float(pw)
-        ph_float = float(ph)
-        x_factors = [0.20, 0.395, 0.59, 0.79]
-        y_factor = 0.45
-        r_factor = 0.14
+    # --- MÉTODO 1: Detecção Geométrica Rápida (Y-Clustering) ---
+    # Este método é extremamente robusto contra ruídos de fundo e variações de cor/ferrugem
+    if len(all_dials) >= 4:
+        from itertools import combinations
+        min_score = float('inf')
         
-        best_group = []
-        for x_fac in x_factors:
-            cx_exp = int(px + x_fac * pw_float)
-            cy_exp = int(py + y_factor * ph_float)
-            r_exp = int(r_factor * pw_float)
-            
-            # Procurar se há algum círculo detectado perto do esperado
-            closest_circle = None
-            min_dist = float('inf')
-            max_allowed_dist = 0.12 * pw_float
-            
-            for (cx, cy, r) in all_dials:
-                dist = math.sqrt((cx - cx_exp)**2 + (cy - cy_exp)**2)
-                if dist < max_allowed_dist and dist < min_dist:
-                    min_dist = dist
-                    closest_circle = (cx, cy, r)
-            
-            if closest_circle is not None:
-                best_group.append(closest_circle)
-            else:
-                # Se não detectou por Hough, usa a coordenada geométrica esperada
-                best_group.append((cx_exp, cy_exp, r_exp))
-                
-    else:
-        # Se não detectou a placa amarela, tenta achar os 4 mostradores alinhados
-        n = len(all_dials)
-        if n >= 4:
-            from itertools import combinations
-            min_score = float('inf')
-            for comb in combinations(all_dials, 4):
+        # Agrupar círculos que possuem Y alinhados (tolerância de 40px)
+        groups = []
+        for c1 in all_dials:
+            group = [c1]
+            for c2 in all_dials:
+                if c1 != c2 and abs(c1[1] - c2[1]) < 40:
+                    group.append(c2)
+            if len(group) >= 4:
+                # Remover duplicatas
+                unique_group = []
+                for item in group:
+                    if item not in unique_group:
+                        unique_group.append(item)
+                if len(unique_group) >= 4:
+                    groups.append(unique_group)
+                    
+        for group in groups:
+            for comb in combinations(group, 4):
                 sorted_comb = sorted(comb, key=lambda c: c[0])
                 ys = [c[1] for c in sorted_comb]
                 radii = [c[2] for c in sorted_comb]
@@ -151,37 +113,90 @@ def process_meter_image(cv_img):
                 spacing_variance = np.var([dx1, dx2, dx3])
                 
                 score = y_variance + r_variance * 2 + spacing_variance
-                
                 avg_r = np.mean(radii)
                 avg_spacing = np.mean([dx1, dx2, dx3])
                 
-                # Critérios de alinhamento e tamanho relaxados
-                if y_variance < 150 and r_variance < 150:
-                    if avg_spacing > 0.8 * avg_r and avg_spacing < 3.2 * avg_r:
+                # Critérios de alinhamento e espaçamento
+                if y_variance < 120 and r_variance < 120:
+                    if avg_spacing > 1.0 * avg_r and avg_spacing < 2.5 * avg_r:
                         if score < min_score:
                             min_score = score
                             best_group = sorted_comb
                             
-        # Se falhar tudo, estima com base nas proporções médias da tela (assumindo câmera apontada para o centro)
-        if best_group is None:
-            cx_exp_list = [246, 363, 481, 603] 
-            cy_exp = int(new_h * 0.38) 
-            r_exp = 85
+    # --- MÉTODO 2 (FALLBACK): Detecção por Placa Amarela (Modelo Físico D-58) ---
+    # Se o Y-clustering não encontrar os 4 (ex: se um mostrador estiver com reflexo total e Hough falhar)
+    if best_group is None:
+        hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
+        lower_yellow = np.array([20, 60, 130])
+        upper_yellow = np.array([30, 255, 255])
+        mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
+        plate_contour = None
+        max_area = -1
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < 5000:
+                continue
+            cx, cy, cw, ch = cv2.boundingRect(c)
+            aspect_ratio = float(cw) / ch
+            if 300 <= cw <= 800 and 150 <= ch <= 500 and 1.3 <= aspect_ratio <= 2.5:
+                if area > max_area:
+                    max_area = area
+                    plate_contour = c
+                    
+        if plate_contour is not None:
+            px, py, pw, ph = cv2.boundingRect(plate_contour)
+            pw_float = float(pw)
+            ph_float = float(ph)
+            
+            x_factors = [0.20, 0.395, 0.59, 0.79]
+            y_factor = 0.45
+            r_factor = 0.14
             
             best_group = []
-            for cx_exp in cx_exp_list:
+            for x_fac in x_factors:
+                cx_exp = int(px + x_fac * pw_float)
+                cy_exp = int(py + y_factor * ph_float)
+                r_exp = int(r_factor * pw_float)
+                
+                # Casar com círculo mais próximo detectado por Hough
                 closest_circle = None
                 min_dist = float('inf')
+                max_allowed_dist = 0.12 * pw_float
+                
                 for (cx, cy, r) in all_dials:
                     dist = math.sqrt((cx - cx_exp)**2 + (cy - cy_exp)**2)
-                    if dist < 60 and dist < min_dist:
+                    if dist < max_allowed_dist and dist < min_dist:
                         min_dist = dist
                         closest_circle = (cx, cy, r)
-                        
+                
                 if closest_circle is not None:
                     best_group.append(closest_circle)
                 else:
                     best_group.append((cx_exp, cy_exp, r_exp))
+                    
+    # --- MÉTODO 3 (FALLBACK ABSOLUTO): Modelo de Tela Centralizada ---
+    # Se nem a placa for encontrada, estima com base nas dimensões da tela (câmera apontada para o centro)
+    if best_group is None:
+        cx_exp_list = [375, 460, 542, 627] if new_h > 1000 else [246, 363, 481, 603]
+        cy_exp = int(new_h * 0.45) if new_h > 1000 else int(new_h * 0.38)
+        r_exp = 75
+        
+        best_group = []
+        for cx_exp in cx_exp_list:
+            closest_circle = None
+            min_dist = float('inf')
+            for (cx, cy, r) in all_dials:
+                dist = math.sqrt((cx - cx_exp)**2 + (cy - cy_exp)**2)
+                if dist < 60 and dist < min_dist:
+                    min_dist = dist
+                    closest_circle = (cx, cy, r)
+                    
+            if closest_circle is not None:
+                best_group.append(closest_circle)
+            else:
+                best_group.append((cx_exp, cy_exp, r_exp))
         
     # 4. Processar ponteiros (Método Híbrido)
     img_draw = img_resized.copy()

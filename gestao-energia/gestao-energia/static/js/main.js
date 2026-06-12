@@ -87,6 +87,16 @@ function displayDate(dateStr) {
     return `${parts[2]}/${parts[1]}/${parts[0]}`;
 }
 
+// Função para parsear data de forma segura no iOS/Safari e evitar "The string did not match the expected pattern"
+function parseLocalDate(dateStr) {
+    if (!dateStr) return new Date();
+    const parts = dateStr.split('-');
+    if (parts.length === 3) {
+        return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    }
+    return new Date(dateStr);
+}
+
 // Carrega dados do LocalStorage
 function loadFromLocalStorage() {
     const saved = localStorage.getItem('consumo_ativo_data');
@@ -98,6 +108,11 @@ function loadFromLocalStorage() {
         } catch (e) {
             console.error("Erro ao ler dados do LocalStorage. Usando padrões.", e);
         }
+    }
+    
+    // Se por algum motivo as datas vierem vazias do localStorage, inicializa elas!
+    if (!appData.settings.startDate || !appData.settings.endDate) {
+        initDates();
     }
     
     // Sincronizar campos de input da configuração com o estado carregado
@@ -236,9 +251,9 @@ function calculateConsumption() {
         return;
     }
     
-    // Processamento das datas
-    const startDate = new Date(appData.settings.startDate + 'T00:00:00');
-    const endDate = new Date(appData.settings.endDate + 'T00:00:00');
+    // Processamento das datas de forma segura e compatível com iOS/Safari
+    const startDate = parseLocalDate(appData.settings.startDate);
+    const endDate = parseLocalDate(appData.settings.endDate);
     const today = new Date();
     // Zerar horas de hoje para cálculo preciso
     today.setHours(0,0,0,0);
