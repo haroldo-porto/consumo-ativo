@@ -36,6 +36,38 @@ def get_ray_darkness(gray_img, center, angle_deg, max_r):
     
     return np.mean([255 - val for val in intensities])
 
+def snap_to_dark_hub(gray_img, cx, cy, window_size=11):
+    """
+    Refina o centro (cx, cy) localizando o centroide da regiao mais escura
+    (o eixo metalico do ponteiro) em uma janela ao redor do centro.
+    """
+    h, w = gray_img.shape[:2]
+    half = window_size // 2
+    
+    x_start = max(0, cx - half)
+    y_start = max(0, cy - half)
+    x_end = min(w, cx + half + 1)
+    y_end = min(h, cy + half + 1)
+    
+    crop = gray_img[y_start:y_end, x_start:x_end]
+    if crop.size == 0:
+        return cx, cy
+        
+    min_val, _, _, _ = cv2.minMaxLoc(crop)
+    thresh_val = min_val + 20
+    _, thresh = cv2.threshold(crop, thresh_val, 255, cv2.THRESH_BINARY_INV)
+    
+    M = cv2.moments(thresh)
+    if M["m00"] > 0:
+        local_x = M["m10"] / M["m00"]
+        local_y = M["m01"] / M["m00"]
+        
+        snapped_x = int(round(x_start + local_x))
+        snapped_y = int(round(y_start + local_y))
+        return snapped_x, snapped_y
+        
+    return cx, cy
+
 def process_meter_image(cv_img):
     """
     Processa a imagem OpenCV do medidor de energia.
@@ -211,6 +243,7 @@ def process_meter_image(cv_img):
     directions = ["CCW", "CW", "CCW", "CW"]
     
     for i, (cx, cy, r) in enumerate(best_group):
+        cx, cy = snap_to_dark_hub(gray, cx, cy, window_size=11)
         margin = int(r * 0.15)
         x_start = max(0, cx - r - margin)
         y_start = max(0, cy - r - margin)
