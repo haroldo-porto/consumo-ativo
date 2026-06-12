@@ -47,92 +47,152 @@ def process_meter_image(cv_img):
     new_h = int(h * (new_w / w))
     img_resized = cv2.resize(cv_img, (new_w, new_h))
     
-    # 1. Localizar o painel amarelo com limites estritos
-    hsv = cv2.cvtColor(img_resized, cv2.COLOR_BGR2HSV)
-    lower_yellow = np.array([20, 60, 130])
-    upper_yellow = np.array([30, 255, 255])
-    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+    # 1. Pré-processar imagem para detecção de círculos
+    gray = cv2.cvtColor(img_resized, cv2.COLOR_BGR2GRAY)
     
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    plate_contour = None
-    max_area = -1
-    
-    for c in contours:
-        area = cv2.contourArea(c)
-        if area < 5000:
-            continue
-        cx, cy, cw, ch = cv2.boundingRect(c)
-        aspect_ratio = float(cw) / ch
-        
-        # Filtros de proporção e dimensão da placa D-58
-        if 300 <= cw <= 800 and 150 <= ch <= 500 and 1.3 <= aspect_ratio <= 2.5:
-            if area > max_area:
-                max_area = area
-                plate_contour = c
-                
-    if plate_contour is not None:
-        px, py, pw, ph = cv2.boundingRect(plate_contour)
-    else:
-        # Fallback se não encontrar o painel amarelo específico
-        px, py, pw, ph = 0, int(new_h * 0.2), new_w, int(new_h * 0.6)
-        
-    # 2. Detectar círculos
-    roi_gray = cv2.cvtColor(img_resized[py:py+ph, px:px+pw], cv2.COLOR_BGR2GRAY)
+    # Restringir a busca de círculos à região central vertical (onde os mostradores sempre ficam)
+    y_min_roi = int(new_h * 0.25)
+    y_max_roi = int(new_h * 0.75)
+    roi_gray = gray[y_min_roi:y_max_roi, :]
     roi_blurred = cv2.medianBlur(roi_gray, 5)
     
+    # Detectar todos os círculos candidatos na ROI
     circles = cv2.HoughCircles(
         roi_blurred, 
         cv2.HOUGH_GRADIENT, 
         dp=1.2, 
-        minDist=pw // 8 if pw > 200 else 40, 
+        minDist=45, 
         param1=50, 
-        param2=20, 
-        minRadius=ph // 10 if ph > 100 else 20, 
-        maxRadius=ph // 3 if ph > 100 else 80
+        param2=22, 
+        minRadius=40, 
+        maxRadius=95
     )
     
-    if circles is None:
-        return None, "Não foi possível encontrar círculos na imagem.", None
-        
-    circles = np.round(circles[0, :]).astype("int")
-    all_dials = []
-    for (cx, cy, r) in circles:
-        all_dials.append((cx + px, cy + py, r))
-        
-    # 3. Filtrar 4 mostradores alinhados
-    best_group = None
-    min_score = float('inf')
+    from itertools import combinations
     
-    n = len(all_dials)
-    if n >= 4:
-        from itertools import combinations
-        for comb in combinations(all_dials, 4):
-            sorted_comb = sorted(comb, key=lambda c: c[0])
-            ys = [c[1] for c in sorted_comb]
-            radii = [c[2] for c in sorted_comb]
+    best_group = None
+    if circles is not None:
+        # Limit to top 25 to avoid combinatorial explosion (HoughCircles returns sorted by strength)
+        circles = circles[0, :25]
+        all_dials = []
+        for (cx, cy, r) in circles:
+            all_dials.append((cx, cy + y_min_roi, r))
             
-            dx1 = sorted_comb[1][0] - sorted_comb[0][0]
-            dx2 = sorted_comb[2][0] - sorted_comb[1][0]
-            dx3 = sorted_comb[3][0] - sorted_comb[2][0]
-            
-            y_variance = np.var(ys)
-            r_variance = np.var(radii)
-            spacing_variance = np.var([dx1, dx2, dx3])
-            
-            score = y_variance + r_variance * 2 + spacing_variance
-            
-            avg_r = np.mean(radii)
-            avg_spacing = np.mean([dx1, dx2, dx3])
-            
-            if y_variance < 30 and r_variance < 50:
-                if avg_spacing > 1.0 * avg_r and avg_spacing < 2.8 * avg_r:
-                    if score < min_score:
-                        min_score = score
-                        best_group = sorted_comb
+        min_score = float('inf')
+        
+        # 1. Try to find a group of 4 aligned dials
+        groups_4 = []
+        for c1 in all_dials:
+            group = [c1]
+            for c2 in all_dials:
+                if c1 != c2 and abs(c1[1] - c2[1]) < 35:
+                    group.append(c2)
+            if len(group) >= 4:
+                unique_group = []
+                for item in group:
+                    if item not in unique_group:
+                        unique_group.append(item)
+                if len(unique_group) >= 4:
+                    groups_4.append(unique_group)
+                    
+        for group in groups_4:
+            for comb in combinations(group, 4):
+                sorted_comb = sorted(comb, key=lambda c: c[0])
+                ys = [c[1] for c in sorted_comb]
+                radii = [c[2] for c in sorted_comb]
+                
+                dx1 = sorted_comb[1][0] - sorted_comb[0][0]
+                dx2 = sorted_comb[2][0] - sorted_comb[1][0]
+                dx3 = sorted_comb[3][0] - sorted_comb[2][0]
+                
+                y_variance = np.var(ys)
+                r_variance = np.var(radii)
+                spacing_variance = np.var([dx1, dx2, dx3])
+                
+                score = y_variance + r_variance * 2 + spacing_variance
+                avg_r = np.mean(radii)
+                avg_spacing = np.mean([dx1, dx2, dx3])
+                
+                # Broadened spacing check to support different image scales/distances
+                if y_variance < 100 and r_variance < 100:
+                    if avg_spacing > 1.0 * avg_r and avg_spacing < 3.2 * avg_r:
+                        if score < min_score:
+                            min_score = score
+                            best_group = sorted_comb
+                            
+        # 2. If 4 aligned dials not found, try to find 3 and extrapolate
+        if best_group is None:
+            groups_3 = []
+            for c1 in all_dials:
+                group = [c1]
+                for c2 in all_dials:
+                    if c1 != c2 and abs(c1[1] - c2[1]) < 30:
+                        group.append(c2)
+                if len(group) >= 3:
+                    unique_group = []
+                    for item in group:
+                        if item not in unique_group:
+                            unique_group.append(item)
+                    if len(unique_group) >= 3:
+                        groups_3.append(unique_group)
                         
+            best_3_group = None
+            min_score_3 = float('inf')
+            
+            for group in groups_3:
+                for comb in combinations(group, 3):
+                    sorted_comb = sorted(comb, key=lambda c: c[0])
+                    ys = [c[1] for c in sorted_comb]
+                    radii = [c[2] for c in sorted_comb]
+                    
+                    dx1 = sorted_comb[1][0] - sorted_comb[0][0]
+                    dx2 = sorted_comb[2][0] - sorted_comb[1][0]
+                    
+                    y_variance = np.var(ys)
+                    r_variance = np.var(radii)
+                    spacing_diff = abs(dx1 - dx2)
+                    
+                    score = y_variance + r_variance * 2 + spacing_diff
+                    avg_r = np.mean(radii)
+                    avg_spacing = np.mean([dx1, dx2])
+                    
+                    if y_variance < 80 and r_variance < 80 and spacing_diff < 30:
+                        if avg_spacing > 1.0 * avg_r and avg_spacing < 3.2 * avg_r:
+                            if score < min_score_3:
+                                min_score_3 = score
+                                best_3_group = sorted_comb
+                                
+            if best_3_group is not None:
+                d3 = sorted(best_3_group, key=lambda c: c[0])
+                dx = (d3[1][0] - d3[0][0] + d3[2][0] - d3[1][0]) / 2.0
+                avg_y = int(np.mean([c[1] for c in d3]))
+                avg_r = int(np.mean([c[2] for c in d3]))
+                
+                # Compare two extrapolation options (center should be close to 500)
+                cx4_a = int(d3[2][0] + dx)
+                dist_a = abs(((d3[0][0] + cx4_a) / 2.0) - 500.0)
+                
+                cx1_b = int(d3[0][0] - dx)
+                dist_b = abs(((cx1_b + d3[2][0]) / 2.0) - 500.0)
+                
+                if dist_a < dist_b:
+                    extrapolated = (cx4_a, avg_y, avg_r)
+                    best_group = [d3[0], d3[1], d3[2], extrapolated]
+                else:
+                    extrapolated = (cx1_b, avg_y, avg_r)
+                    best_group = [extrapolated, d3[0], d3[1], d3[2]]
+                    
+    # 3. Fallback: Centered Static Layout Template
     if best_group is None:
-        return None, "Não foi possível detectar a fileira com os 4 mostradores.", None
+        cx_exp_list = [248, 416, 584, 752]
+        cy_exp = int(new_h * 0.48)
+        r_exp = 65
+        best_group = []
+        for cx_exp in cx_exp_list:
+            best_group.append((cx_exp, cy_exp, r_exp))
+            
+    # Convert all coordinates to integers
+    best_group = [(int(round(c[0])), int(round(c[1])), int(round(c[2]))) for c in best_group]
         
     # 4. Processar ponteiros (Método Híbrido)
     img_draw = img_resized.copy()

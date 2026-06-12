@@ -86,6 +86,19 @@ body {
     font-weight: 400;
 }
 
+.version-badge {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: rgba(255, 255, 255, 0.05);
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-left: 6px;
+    border: 1px solid var(--border-glass);
+    align-self: center;
+    letter-spacing: 0.5px;
+}
+
 .header-status {
     display: flex;
     align-items: center;
